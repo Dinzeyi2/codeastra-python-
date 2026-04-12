@@ -145,16 +145,29 @@ class BlindAgentMiddleware:
     def __init__(
         self,
         agent:          Any,
-        api_key:        str,
-        agent_id:       str = "sdk-agent",
-        base_url:       str = "https://app.codeastra.dev",
-        classification: str = "pii",
+        api_key:        str  = None,
+        agent_id:       str  = "sdk-agent",
+        base_url:       str  = None,
+        classification: str  = "pii",
         pipeline_id:    Optional[str] = None,
         on_tokenize:    Optional[Callable] = None,
         verbose:        bool = False,
+        mode:           str  = "auto",        # auto | cloud | onprem | hybrid
+        zero_log:       bool = False,
+        executor_url:   str  = None,
+        onprem_dir:     str  = "./codeastra-onprem",
     ):
         self._agent          = agent
-        self._client         = CodeAstraClient(api_key, base_url, agent_id)
+        self._client         = CodeAstraClient(
+            api_key      = api_key,
+            base_url     = base_url,
+            agent_id     = agent_id,
+            mode         = mode,
+            zero_log     = zero_log,
+            executor_url = executor_url,
+            onprem_dir   = onprem_dir,
+            verbose      = verbose,
+        )
         self._classification = classification
         self._pipeline_id    = pipeline_id
         self._on_tokenize    = on_tokenize
