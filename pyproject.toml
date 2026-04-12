@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "codeastra"
-version = "1.0.0"
+version = "1.0.1"
 description = "Blind Agent SDK — drop-in middleware for LangChain, CrewAI, AutoGPT. Two lines makes any agent blind to real data."
 readme = "README.md"
 license = {text = "MIT"}
