@@ -410,3 +410,291 @@ class BlindAgentMiddleware:
     def __exit__(self, *_): self.close()
     async def __aenter__(self): return self
     async def __aexit__(self, *_): await self.aclose()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INPUT SCANNER — scans prompt text for raw PII/PHI/PCI before agent sees it
+# OUTPUT SCANNER — scans agent response for any leaked real values
+# ══════════════════════════════════════════════════════════════════════════════
+
+import re as _re
+
+# Regex patterns for detecting raw sensitive data in free text
+_PATTERNS = {
+    # SSN: 123-45-6789 or 123456789
+    "ssn": _re.compile(
+        r'\b(?!000|666|9\d{2})\d{3}[-\s]?(?!00)\d{2}[-\s]?(?!0000)\d{4}\b'
+    ),
+    # Credit card: 13-19 digits, passes Luhn
+    "credit_card": _re.compile(
+        r'\b(?:4[0-9]{12}(?:[0-9]{3})?'       # Visa
+        r'|5[1-5][0-9]{14}'                    # Mastercard
+        r'|3[47][0-9]{13}'                     # Amex
+        r'|6(?:011|5[0-9]{2})[0-9]{12}'       # Discover
+        r'|(?:2131|1800|35\d{3})\d{11})\b'    # JCB
+    ),
+    # Email
+    "email": _re.compile(
+        r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'
+    ),
+    # Phone: various formats
+    "phone": _re.compile(
+        r'\b(?:\+?1[-.\s]?)?'
+        r'(?:\(?\d{3}\)?[-.\s]?)'
+        r'\d{3}[-.\s]?\d{4}\b'
+    ),
+    # DOB: MM/DD/YYYY or YYYY-MM-DD
+    "dob": _re.compile(
+        r'\b(?:0[1-9]|1[0-2])[\/\-](?:0[1-9]|[12]\d|3[01])[\/\-](?:19|20)\d{2}\b'
+        r'|\b(?:19|20)\d{2}[\/\-](?:0[1-9]|1[0-2])[\/\-](?:0[1-9]|[12]\d|3[01])\b'
+    ),
+    # MRN: MRN- or MRN: followed by digits
+    "mrn": _re.compile(
+        r'\bMRN[-:\s]*\s*[A-Z0-9]{4,12}\b', _re.IGNORECASE
+    ),
+    # IP address
+    "ip_address": _re.compile(
+        r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b'
+    ),
+}
+
+
+def _luhn_check(number: str) -> bool:
+    """Validate credit card number with Luhn algorithm."""
+    digits = [int(d) for d in number if d.isdigit()]
+    if len(digits) < 13:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
+def _scan_text_for_pii(text: str) -> dict:
+    """
+    Scan free text for raw PII/PHI/PCI patterns.
+    Returns {synthetic_field_key: matched_value} for tokenization.
+
+    Example:
+        "Patient John Smith SSN 123-45-6789 email john@hospital.org"
+        → {"ssn_0": "123-45-6789", "email_0": "john@hospital.org"}
+    """
+    found = {}
+    if not isinstance(text, str):
+        return found
+
+    for field, pattern in _PATTERNS.items():
+        matches = pattern.findall(text)
+        for i, match in enumerate(matches):
+            val = match.strip() if isinstance(match, str) else match[0].strip()
+            if not val or TOKEN_RE.search(val):
+                continue
+            # Extra validation for credit cards
+            if field == "credit_card":
+                digits_only = _re.sub(r'\D', '', val)
+                if not _luhn_check(digits_only):
+                    continue
+            key = f"{field}_{i}" if i > 0 else field
+            found[key] = val
+
+    return found
+
+
+def _scan_obj_for_pii(obj: Any) -> dict:
+    """Scan any object (str, dict, list) for raw PII in free text."""
+    if isinstance(obj, str):
+        return _scan_text_for_pii(obj)
+    elif isinstance(obj, dict):
+        combined = {}
+        for v in obj.values():
+            combined.update(_scan_obj_for_pii(v))
+        return combined
+    elif isinstance(obj, list):
+        combined = {}
+        for item in obj:
+            combined.update(_scan_obj_for_pii(item))
+        return combined
+    return {}
+
+
+def _blind_text(text: str, token_map: dict) -> str:
+    """Replace all known real values in text with their tokens."""
+    if not isinstance(text, str):
+        return text
+    for real, token in token_map.items():
+        if real and real in text:
+            text = text.replace(real, token)
+    return text
+
+
+def _blind_any(obj: Any, token_map: dict) -> Any:
+    """Replace real values anywhere in obj with tokens."""
+    if isinstance(obj, str):
+        return _blind_text(obj, token_map)
+    elif isinstance(obj, dict):
+        return {k: _blind_any(v, token_map) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_blind_any(i, token_map) for i in obj]
+    return obj
+
+
+# ── Patch BlindAgentMiddleware with input + output scanning ──────────────────
+
+_orig_run    = BlindAgentMiddleware.run
+_orig_invoke = BlindAgentMiddleware.invoke
+_orig_chat   = BlindAgentMiddleware.chat
+_orig_arun   = BlindAgentMiddleware.arun
+_orig_ainvoke = BlindAgentMiddleware.ainvoke
+
+
+def _scan_and_blind_input(self, *args, **kwargs):
+    """
+    Scan all input args/kwargs for raw PII/PHI/PCI.
+    Tokenize any found values before passing to the agent.
+    Returns (new_args, new_kwargs).
+    """
+    # Collect all text from args and kwargs
+    all_text = json.dumps(list(args)) + json.dumps(kwargs)
+    raw_pii  = _scan_obj_for_pii(all_text)
+
+    if not raw_pii:
+        return args, kwargs
+
+    # Tokenize detected values
+    try:
+        classification = _classify(set(k.split("_")[0] for k in raw_pii))
+        minted = self._client.tokenize(raw_pii, classification=classification)
+        # Build replacement map: {real_value: token}
+        for field, token in minted.items():
+            real_val = raw_pii.get(field)
+            if real_val:
+                self._value_to_token[real_val] = token
+            self._session_tokens[field] = token
+
+        if self._verbose:
+            print(f"[CodeAstra] Input scan: tokenized {len(minted)} value(s) in prompt: {list(minted.keys())}")
+
+        # Replace real values in args and kwargs
+        new_args   = tuple(_blind_any(a, self._value_to_token) for a in args)
+        new_kwargs = {k: _blind_any(v, self._value_to_token) for k, v in kwargs.items()}
+        return new_args, new_kwargs
+
+    except Exception as e:
+        if self._verbose:
+            print(f"[CodeAstra] Input scan warning: {e}")
+        return args, kwargs
+
+
+def _scan_output(self, result: Any) -> Any:
+    """
+    Scan agent output for any real values that leaked through.
+    Replace with tokens using session's value_to_token map.
+    Also scan output text for any NEW raw PII not yet tokenized.
+    """
+    # Step 1: replace known real values with existing tokens
+    if self._value_to_token:
+        result = _blind_any(result, self._value_to_token)
+
+    # Step 2: scan output for any new raw PII that leaked
+    new_pii = _scan_obj_for_pii(result)
+    if new_pii:
+        try:
+            classification = _classify(set(k.split("_")[0] for k in new_pii))
+            minted = self._client.tokenize(new_pii, classification=classification)
+            for field, token in minted.items():
+                real_val = new_pii.get(field)
+                if real_val:
+                    self._value_to_token[real_val] = token
+                self._session_tokens[field] = token
+
+            result = _blind_any(result, self._value_to_token)
+
+            if self._verbose:
+                print(f"[CodeAstra] Output gate: caught {len(minted)} leaked value(s): {list(minted.keys())}")
+        except Exception as e:
+            if self._verbose:
+                print(f"[CodeAstra] Output gate warning: {e}")
+
+    return result
+
+
+async def _ascan_output(self, result: Any) -> Any:
+    """Async version of _scan_output."""
+    if self._value_to_token:
+        result = _blind_any(result, self._value_to_token)
+
+    new_pii = _scan_obj_for_pii(result)
+    if new_pii:
+        try:
+            classification = _classify(set(k.split("_")[0] for k in new_pii))
+            minted = await self._client.atokenize(new_pii, classification=classification)
+            for field, token in minted.items():
+                real_val = new_pii.get(field)
+                if real_val:
+                    self._value_to_token[real_val] = token
+                self._session_tokens[field] = token
+            result = _blind_any(result, self._value_to_token)
+            if self._verbose:
+                print(f"[CodeAstra] Output gate (async): caught {len(minted)} leaked value(s)")
+        except Exception as e:
+            if self._verbose:
+                print(f"[CodeAstra] Output gate warning: {e}")
+    return result
+
+
+# ── Monkey-patch all proxy methods with input + output scanning ───────────────
+
+def _patched_run(self, *args, **kwargs):
+    args, kwargs = _scan_and_blind_input(self, *args, **kwargs)
+    result = self._agent.run(*args, **kwargs)
+    result = self._blind_output(result)       # tool output scan (existing)
+    return _scan_output(self, result)         # output gate scan (new)
+
+def _patched_invoke(self, *args, **kwargs):
+    args, kwargs = _scan_and_blind_input(self, *args, **kwargs)
+    result = self._agent.invoke(*args, **kwargs)
+    if isinstance(result, dict) and "output" in result:
+        result["output"] = self._blind_output(result["output"])
+        result["output"] = _scan_output(self, result["output"])
+        return result
+    result = self._blind_output(result)
+    return _scan_output(self, result)
+
+def _patched_chat(self, *args, **kwargs):
+    args, kwargs = _scan_and_blind_input(self, *args, **kwargs)
+    result = self._agent.chat(*args, **kwargs)
+    result = self._blind_output(result)
+    return _scan_output(self, result)
+
+async def _patched_arun(self, *args, **kwargs):
+    args, kwargs = _scan_and_blind_input(self, *args, **kwargs)
+    result = await self._agent.arun(*args, **kwargs)
+    result = await self._ablind_output(result)
+    return await _ascan_output(self, result)
+
+async def _patched_ainvoke(self, *args, **kwargs):
+    args, kwargs = _scan_and_blind_input(self, *args, **kwargs)
+    result = await self._agent.ainvoke(*args, **kwargs)
+    if isinstance(result, dict) and "output" in result:
+        result["output"] = await self._ablind_output(result["output"])
+        result["output"] = await _ascan_output(self, result["output"])
+        return result
+    result = await self._ablind_output(result)
+    return await _ascan_output(self, result)
+
+
+# Apply patches
+BlindAgentMiddleware.run              = _patched_run
+BlindAgentMiddleware.invoke           = _patched_invoke
+BlindAgentMiddleware.chat             = _patched_chat
+BlindAgentMiddleware.arun             = _patched_arun
+BlindAgentMiddleware.ainvoke          = _patched_ainvoke
+
+# Expose scanner functions for direct use
+BlindAgentMiddleware._scan_input      = _scan_and_blind_input
+BlindAgentMiddleware._scan_output     = _scan_output
+BlindAgentMiddleware.scan_text        = staticmethod(_scan_text_for_pii)
