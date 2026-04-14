@@ -450,24 +450,55 @@ _PATTERNS = {
     "email": _re.compile(
         r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'
     ),
-    # Phone: various formats
+    # Phone: +1-404-555-0101, (404) 555-0101, 404.555.0101, +14045550101
     "phone": _re.compile(
-        r'\b(?:\+?1[-.\s]?)?'
-        r'(?:\(?\d{3}\)?[-.\s]?)'
-        r'\d{3}[-.\s]?\d{4}\b'
+        r'(?:\+?1[-.\ s]?)?'
+        r'(?:\(?\d{3}\)?[-.\ s]?)'
+        r'\d{3}[-.\ s]?\d{4}\b'
     ),
     # DOB: MM/DD/YYYY or YYYY-MM-DD
     "dob": _re.compile(
         r'\b(?:0[1-9]|1[0-2])[\/\-](?:0[1-9]|[12]\d|3[01])[\/\-](?:19|20)\d{2}\b'
         r'|\b(?:19|20)\d{2}[\/\-](?:0[1-9]|1[0-2])[\/\-](?:0[1-9]|[12]\d|3[01])\b'
     ),
-    # MRN: MRN- or MRN: followed by digits
+    # MRN: MRN-HC-001, MRN:12345, MRN 4829103 — any format
     "mrn": _re.compile(
-        r'\bMRN[-:\s]*\s*[A-Z0-9]{4,12}\b', _re.IGNORECASE
+        r'\bMRN[-:\s]*[A-Z0-9][-A-Z0-9]{2,14}\b', _re.IGNORECASE
     ),
     # IP address
     "ip_address": _re.compile(
         r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b'
+    ),
+    # Security clearance levels: TOP SECRET, SECRET, CONFIDENTIAL + modifiers
+    "clearance": _re.compile(
+        r'\b(?:TOP\s+SECRET|TS)(?:/(?:SCI|SAP|SI|TK|HCS|G|NOFORN))?\b'
+        r'|\bSECRET(?:/(?:SAP|SCI|NOFORN|REL))?\b'
+        r'|\bCONFIDENTIAL(?:/NOFORN)?\b',
+        _re.IGNORECASE
+    ),
+    # Military/gov operation codes: OP-NIGHTFALL, OPERATION SHADOWNET
+    "operation_code": _re.compile(
+        r'\bOP-[A-Z0-9]{3,20}\b'
+        r'|\bOPERATION\s+[A-Z]{3,20}\b',
+        _re.IGNORECASE
+    ),
+    # Asset/facility IDs: ASSET-TF-001, FAC-BRAVO-7
+    "asset_id": _re.compile(
+        r'\b(?:ASSET|FAC|FACILITY)-[A-Z0-9][-A-Z0-9]{2,14}\b',
+        _re.IGNORECASE
+    ),
+    # Employee IDs: EMP-10042, EMP-xxxxx
+    "employee_id": _re.compile(
+        r'\bEMP-[0-9]{4,8}\b', _re.IGNORECASE
+    ),
+    # Case/matter references: LEGAL-2024-CV-001, MATTER-789456
+    "case_ref": _re.compile(
+        r'\b(?:LEGAL|CASE|MATTER)-[A-Z0-9][-A-Z0-9]{2,20}\b',
+        _re.IGNORECASE
+    ),
+    # Account numbers: ACC-789456123
+    "account_ref": _re.compile(
+        r'\bACC-[0-9]{6,12}\b', _re.IGNORECASE
     ),
 }
 
