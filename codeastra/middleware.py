@@ -500,6 +500,11 @@ _PATTERNS = {
     "account_ref": _re.compile(
         r'\bACC-[0-9]{6,12}\b', _re.IGNORECASE
     ),
+    # Salary/financial amounts: $145,000 $28,000 $1,500,000
+    "financial_amount": _re.compile(
+        r'\$\d{1,3}(?:,\d{3})+(?:\.\d{2})?\b'
+        r'|\$\d{4,}(?:\.\d{2})?\b'
+    ),
 }
 
 
