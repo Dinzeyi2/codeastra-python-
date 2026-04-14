@@ -391,6 +391,495 @@ class CodeAstraClient:
     def is_token(val: str) -> bool:
         return bool(TOKEN_RE.fullmatch(val.strip()))
 
+
+    # ── smart tokens (v4.2) ───────────────────────────────────────────────────
+
+    def smart_tokenize(
+        self,
+        real_value:      str,
+        data_type:       str,
+        allowed_actions: list = [],
+        allowed_targets: list = [],
+        allowed_fields:  list = [],
+        max_uses:        int  = 1,
+        ttl_seconds:     int  = 86400,
+        semantic_label:  str  = None,
+    ) -> dict:
+        """
+        Mint a smart token — policy-bound and semantically meaningful.
+
+        The agent receives meaning (what the data is, where it can go).
+        The real value is vault-protected forever.
+        The trusted executor reveals it only at the last mile.
+
+        Usage:
+            token = client.smart_tokenize(
+                real_value      = "John Smith",
+                data_type       = "patient_name",
+                allowed_actions = ["fill_form"],
+                allowed_fields  = ["first_name"],
+                max_uses        = 1,
+                ttl_seconds     = 30,
+            )
+            # → {"token_id": "tok_PATI_a1b2c3", "data_type": "patient_name", ...}
+            # Agent gets this. Never sees "John Smith".
+        """
+        return self._post("/vault/smart-token", {
+            "real_value":      real_value,
+            "data_type":       data_type,
+            "agent_id":        self.agent_id,
+            "allowed_actions": allowed_actions,
+            "allowed_targets": allowed_targets,
+            "allowed_fields":  allowed_fields,
+            "max_uses":        max_uses,
+            "ttl_seconds":     ttl_seconds,
+            "semantic_label":  semantic_label,
+        })
+
+    def smart_tokenize_batch(self, tokens: list) -> list:
+        """Mint multiple smart tokens in one call."""
+        resp = self._post("/vault/smart-token/batch", {
+            "agent_id": self.agent_id,
+            "tokens":   tokens,
+        })
+        return resp.get("tokens", [])
+
+    def smart_token_info(self, token_id: str) -> dict:
+        """Get smart token metadata. Safe for agent — never returns real value."""
+        return self._get(f"/vault/smart-token/{token_id}")
+
+    def smart_token_execute(
+        self,
+        token_id:    str,
+        action_type: str = None,
+        target_url:  str = None,
+        field_name:  str = None,
+    ) -> dict:
+        """
+        Policy-gated JIT reveal. Called by trusted executor — NEVER by agent.
+
+        Runs all 5 policy gates. If all pass, returns real value.
+        Token auto-revokes after max_uses reached.
+
+        Usage (in your executor endpoint):
+            result = client.smart_token_execute(
+                token_id    = "tok_PATI_a1b2c3",
+                action_type = "fill_form",
+                target_url  = "https://hospital.com/intake",
+                field_name  = "first_name",
+            )
+            if result["authorized"]:
+                form.fill(field_name, result["real_value"])
+                # real value used here — agent never saw it
+        """
+        return self._post("/vault/smart-token/execute", {
+            "token_id":    token_id,
+            "action_type": action_type,
+            "target_url":  target_url,
+            "field_name":  field_name,
+            "agent_id":    self.agent_id,
+        })
+
+    def smart_token_revoke(self, token_id: str, reason: str = "manual") -> dict:
+        """Immediately revoke a smart token."""
+        try:
+            return self._get(f"/vault/smart-token/{token_id}/revoke")
+        except Exception:
+            return self._post(f"/vault/smart-token/{token_id}/revoke", {"reason": reason})
+
+    def smart_token_audit(self, token_id: str) -> list:
+        """Full reveal audit trail for a token."""
+        return self._get(f"/vault/smart-token/{token_id}/audit").get("audit", [])
+
+    def smart_token_types(self) -> list:
+        """List all supported data types for smart tokens."""
+        return self._get("/vault/smart-token-types").get("types", [])
+
+    async def asmart_tokenize(
+        self,
+        real_value:      str,
+        data_type:       str,
+        allowed_actions: list = [],
+        allowed_targets: list = [],
+        allowed_fields:  list = [],
+        max_uses:        int  = 1,
+        ttl_seconds:     int  = 86400,
+    ) -> dict:
+        return await self._apost("/vault/smart-token", {
+            "real_value":      real_value,
+            "data_type":       data_type,
+            "agent_id":        self.agent_id,
+            "allowed_actions": allowed_actions,
+            "allowed_targets": allowed_targets,
+            "allowed_fields":  allowed_fields,
+            "max_uses":        max_uses,
+            "ttl_seconds":     ttl_seconds,
+        })
+
+    async def asmart_token_execute(
+        self,
+        token_id:    str,
+        action_type: str = None,
+        target_url:  str = None,
+        field_name:  str = None,
+    ) -> dict:
+        return await self._apost("/vault/smart-token/execute", {
+            "token_id":    token_id,
+            "action_type": action_type,
+            "target_url":  target_url,
+            "field_name":  field_name,
+            "agent_id":    self.agent_id,
+        })
+
+
+    # ── blind RAG (v4.3) ──────────────────────────────────────────────────────
+
+    def rag_ingest(
+        self,
+        content:        dict,
+        doc_type:       str,
+        title:          str  = None,
+        source:         str  = None,
+        classification: str  = "pii",
+    ) -> dict:
+        """
+        Tokenize a document and index it for blind semantic search.
+
+        Real values tokenized before indexing.
+        Agent can search and find — never sees real values.
+
+        Usage:
+            client.rag_ingest(
+                content  = {"name": "John Smith", "age": "67",
+                             "diagnosis": "diabetes", "risk": "high"},
+                doc_type = "patient_record",
+            )
+        """
+        return self._post("/rag/ingest", {
+            "content":        content,
+            "doc_type":       doc_type,
+            "agent_id":       self.agent_id,
+            "title":          title,
+            "source":         source,
+            "classification": classification,
+        })
+
+    def rag_ingest_batch(self, documents: list) -> dict:
+        """Ingest multiple documents. Max 50 per call."""
+        return self._post("/rag/ingest/batch", {
+            "agent_id":  self.agent_id,
+            "documents": documents,
+        })
+
+    def rag_search(
+        self,
+        query:     str,
+        doc_type:  str   = None,
+        top_k:     int   = 5,
+        min_score: float = 0.3,
+    ) -> dict:
+        """
+        Semantic search over tokenized documents.
+        Returns token references — never real values.
+
+        Usage:
+            results = client.rag_search(
+                "find diabetic patients over 65 with high risk"
+            )
+            for r in results["results"]:
+                tokens = r["tokens"]  # ["[CVT:NAME:A1B2]", ...]
+                # Pass tokens to executor to notify real patients
+        """
+        body = {"query": query, "top_k": top_k, "min_score": min_score}
+        if doc_type: body["doc_type"] = doc_type
+        return self._post("/rag/search", body)
+
+    def rag_delete(self, doc_id: str) -> dict:
+        """Delete a document from the blind RAG index."""
+        r = self._get_sync().delete(f"{self.base_url}/rag/document/{doc_id}")
+        r.raise_for_status()
+        return r.json()
+
+    def rag_stats(self) -> dict:
+        """Vault RAG statistics."""
+        return self._get("/rag/stats")
+
+    async def arag_ingest(
+        self,
+        content:        dict,
+        doc_type:       str,
+        title:          str = None,
+        classification: str = "pii",
+    ) -> dict:
+        return await self._apost("/rag/ingest", {
+            "content": content, "doc_type": doc_type,
+            "agent_id": self.agent_id, "title": title,
+            "classification": classification,
+        })
+
+    async def arag_search(
+        self,
+        query:    str,
+        doc_type: str   = None,
+        top_k:    int   = 5,
+        min_score: float = 0.3,
+    ) -> dict:
+        body = {"query": query, "top_k": top_k, "min_score": min_score}
+        if doc_type: body["doc_type"] = doc_type
+        return await self._apost("/rag/search", body)
+
+
+    # ── policy-driven sensitivity (v4.4) ─────────────────────────────────────
+
+    def register_sensitive_type(
+        self,
+        fields:    list,
+        prefixes:  list = [],
+        doc_types: list = [],
+    ) -> dict:
+        """
+        Register custom sensitive field names for your tenant.
+        Once registered, these are ALWAYS tokenized automatically.
+
+        Usage:
+            client.register_sensitive_type(
+                fields    = ["employee_badge", "case_ref", "policy_number"],
+                prefixes  = ["EMP-", "LEGAL-", "POL-"],
+                doc_types = ["hr_record", "legal_filing"],
+            )
+            # Now employee_badge is always tokenized — no per-request config needed
+        """
+        return self._post("/policy/sensitivity/fields", {
+            "fields":    fields,
+            "prefixes":  prefixes,
+            "doc_types": doc_types,
+        })
+
+    def set_sensitivity_policy(
+        self,
+        sensitive_fields:      list = None,
+        sensitive_prefixes:    list = None,
+        sensitive_doc_types:   list = None,
+        field_classifications: dict = None,
+        strict_mode:           bool = None,
+    ) -> dict:
+        """
+        Set full sensitivity policy.
+
+        field_classifications: {
+            "employee_badge": "restricted",   # always tokenize
+            "department":     "internal",     # keep but don't export
+            "office_floor":   "public",       # never tokenize
+        }
+        """
+        body = {}
+        if sensitive_fields       is not None: body["sensitive_fields"]       = sensitive_fields
+        if sensitive_prefixes     is not None: body["sensitive_prefixes"]     = sensitive_prefixes
+        if sensitive_doc_types    is not None: body["sensitive_doc_types"]    = sensitive_doc_types
+        if field_classifications  is not None: body["field_classifications"]  = field_classifications
+        if strict_mode            is not None: body["strict_mode"]            = strict_mode
+        return self._post("/policy/sensitivity", body)
+
+    def get_sensitivity_policy(self) -> dict:
+        """Get current sensitivity policy."""
+        return self._get("/policy/sensitivity")
+
+    def test_sensitivity(
+        self,
+        content:          dict,
+        field_policy:     dict = {},
+        sensitive_fields: list = [],
+        tokenize_all:     bool = False,
+    ) -> dict:
+        """
+        Test how your policy classifies fields — without actually tokenizing.
+        Shows exactly what would be tokenized vs kept.
+
+        Usage:
+            result = client.test_sensitivity({
+                "employee_badge": "EMP-77291",
+                "name":           "John Smith",
+                "department":     "Oncology",
+                "age_range":      "65-75",
+            })
+            print(result["would_tokenize"])  # employee_badge, name
+            print(result["would_keep"])      # department, age_range
+        """
+        return self._post("/policy/sensitivity/test", {
+            "content":          content,
+            "field_policy":     field_policy,
+            "sensitive_fields": sensitive_fields,
+            "tokenize_all":     tokenize_all,
+        })
+
+    def smart_ingest(
+        self,
+        content:          dict,
+        doc_type:         str,
+        field_policy:     dict = {},
+        sensitive_fields: list = [],
+        tokenize_all:     bool = False,
+        title:            str  = None,
+        classification:   str  = "pii",
+    ) -> dict:
+        """
+        Ingest a document with full policy-driven sensitivity.
+        Combines RAG ingest + policy resolution in one call.
+
+        All three layers applied automatically:
+          - Built-in: known field names + patterns
+          - Per-request: field_policy + sensitive_fields
+          - Tenant policy: registered via register_sensitive_type()
+
+        Usage:
+            # Simple — built-in detection handles it
+            client.smart_ingest({"name": "John", "age": "67"}, "patient_record")
+
+            # With custom fields
+            client.smart_ingest(
+                content          = {"employee_badge": "EMP-77291", "dept": "HR"},
+                doc_type         = "hr_record",
+                sensitive_fields = ["employee_badge"],
+            )
+
+            # With field-level classification
+            client.smart_ingest(
+                content      = {"badge": "EMP-77291", "floor": "3rd"},
+                doc_type     = "employee_record",
+                field_policy = {"badge": "tokenize", "floor": "public"},
+            )
+        """
+        return self._post("/rag/ingest", {
+            "content":          content,
+            "doc_type":         doc_type,
+            "agent_id":         self.agent_id,
+            "title":            title,
+            "classification":   classification,
+            "field_policy":     field_policy,
+            "sensitive_fields": sensitive_fields,
+            "tokenize_all":     tokenize_all,
+        })
+
+
+    # ── context-aware + k-anonymity (v4.5) ───────────────────────────────────
+
+    def set_context(
+        self,
+        industry:               str  = None,
+        data_scope:             str  = None,
+        classification_level:   str  = None,
+        extra_sensitive_fields: list = [],
+        safe_fields:            list = [],
+        strict_mode:            bool = False,
+    ) -> dict:
+        """
+        Register context-aware sensitivity rules.
+
+        Industry profiles auto-applied:
+            healthcare → diagnosis, medication, lab_result tokenized
+            fintech    → salary, credit_score, transaction tokenized
+            legal      → case_number, privilege, settlement tokenized
+            government → clearance_level, classification tokenized
+            hr         → salary, performance_rating tokenized
+
+        Usage:
+            client.set_context(industry="healthcare", data_scope="patient_records")
+            # Now diagnosis, medication, lab_result etc. are always tokenized
+            # Even if not in built-in detection
+        """
+        return self._post("/policy/context", {
+            "industry":               industry,
+            "data_scope":             data_scope,
+            "classification_level":   classification_level,
+            "extra_sensitive_fields": extra_sensitive_fields,
+            "safe_fields":            safe_fields,
+            "context_strict_mode":    strict_mode,
+        })
+
+    def set_anonymity(
+        self,
+        k_minimum:           int  = 5,
+        suppress_singleton:  bool = True,
+        auto_bucket:         bool = True,
+        detect_narrowing:    bool = True,
+        quasi_identifiers:   list = None,
+    ) -> dict:
+        """
+        Configure k-anonymity protection.
+
+        Protects against re-identification even when names are tokenized.
+        "67yo diabetic in zip 30314" → 1 result → suppressed (below k=5)
+        age:67 → auto-bucketed to 65-74
+        zip:30314 → auto-bucketed to 303xxx
+        Narrowing attacks → detected and blocked
+
+        Usage:
+            client.set_anonymity(k_minimum=5, auto_bucket=True)
+        """
+        body = {
+            "k_minimum":          k_minimum,
+            "suppress_singleton": suppress_singleton,
+            "auto_bucket":        auto_bucket,
+            "detect_narrowing":   detect_narrowing,
+        }
+        if quasi_identifiers is not None:
+            body["quasi_identifiers"] = quasi_identifiers
+        return self._post("/policy/anonymity", body)
+
+    def test_context(
+        self,
+        content:  dict,
+        context:  dict,
+        field_policy: dict = {},
+    ) -> dict:
+        """
+        Test context-aware classification without ingesting.
+
+        Usage:
+            result = client.test_context(
+                content = {"diagnosis": "diabetes", "age": "67", "dept": "cardiology"},
+                context = {"industry": "healthcare"},
+            )
+            # would_tokenize: diagnosis (context-sensitive in healthcare)
+            # would_keep: dept (not sensitive)
+        """
+        return self._post("/policy/context/test", {
+            "content":      content,
+            "context":      context,
+            "field_policy": field_policy,
+        })
+
+    def smart_ingest_with_context(
+        self,
+        content:   dict,
+        doc_type:  str,
+        context:   dict = {},
+        field_policy: dict = {},
+        sensitive_fields: list = [],
+        tokenize_all: bool = False,
+        title:     str  = None,
+    ) -> dict:
+        """
+        Full pipeline ingest — policy + context + k-anonymity protection.
+
+        Usage:
+            client.smart_ingest_with_context(
+                content  = {"name": "John", "diagnosis": "diabetes", "age": "67"},
+                doc_type = "patient_record",
+                context  = {"industry": "healthcare", "data_scope": "patient_records"},
+            )
+        """
+        return self._post("/rag/ingest", {
+            "content":          content,
+            "doc_type":         doc_type,
+            "agent_id":         self.agent_id,
+            "title":            title,
+            "context":          context,
+            "field_policy":     field_policy,
+            "sensitive_fields": sensitive_fields,
+            "tokenize_all":     tokenize_all,
+        })
+
     def info(self) -> dict:
         return {
             "mode":      self.mode,
