@@ -1,11 +1,11 @@
-from .middleware import BlindAgentMiddleware
 from .client import CodeAstraClient
+from .middleware import BlindAgentMiddleware
 from .wrappers import blind_tool, BlindCrewAIAgent, BlindAutoGPTAgent
 
-__version__ = "1.5.2"
+__version__ = "1.6.0"
 __all__ = [
-    "BlindAgentMiddleware",
     "CodeAstraClient",
+    "BlindAgentMiddleware",
     "blind_tool",
     "BlindCrewAIAgent",
     "BlindAutoGPTAgent",
